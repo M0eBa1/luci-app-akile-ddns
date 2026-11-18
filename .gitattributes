@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.lua text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+Makefile text eol=lf
+root/usr/bin/akile-ddns text eol=lf
+root/etc/init.d/akile-ddns text eol=lf
+root/etc/config/akile-ddns text eol=lf

@@ -186,21 +186,21 @@ do_check_and_update() {
 	local force="$1"
 	local now="$(date '+%Y-%m-%d %H:%M:%S')"
 
-	local enabled="$(uci -q get akile-ddns.main.enabled || echo 0)"
+	local enabled="$(uci -q get akile-ddns.main.enabled || uci -q get akile-ddns.@global[0].enabled || echo 0)"
 	if [ "$enabled" != "1" ] && [ "$force" != "force" ]; then
-		write_status "0" "$now" "" "插件未启用"
+		write_status "0" "$now" "" "插件未在配置中启用"
 		return 0
 	fi
 
-	local api_key="$(uci -q get akile-ddns.main.api_key)"
+	local api_key="$(uci -q get akile-ddns.main.api_key || uci -q get akile-ddns.@global[0].api_key)"
 	if [ -z "$api_key" ]; then
 		log "WARN" "API Key 未设置，无法执行白名单更新"
 		write_status "1" "$now" "" "API Key 未设置"
 		return 1
 	fi
 
-	local ip_source="$(uci -q get akile-ddns.main.ip_source || echo auto)"
-	local custom_ip_url="$(uci -q get akile-ddns.main.custom_ip_url)"
+	local ip_source="$(uci -q get akile-ddns.main.ip_source || uci -q get akile-ddns.@global[0].ip_source || echo auto)"
+	local custom_ip_url="$(uci -q get akile-ddns.main.custom_ip_url || uci -q get akile-ddns.@global[0].custom_ip_url)"
 
 	# 1. 获取当前公网 IP
 	local current_ip="$(get_public_ip "$ip_source" "$custom_ip_url")"
@@ -213,7 +213,7 @@ do_check_and_update() {
 	local last_ip=""
 	[ -f "$LAST_IP_FILE" ] && last_ip="$(cat "$LAST_IP_FILE" 2>/dev/null | tr -d ' \t\r\n')"
 
-	# 2. 优化：如果不是强制检测，且上次有记录且 IP 没有变动，则完全不发起任何更新，直接退出
+	# 2. 如果不是强制检测，且上次有记录且 IP 没有变动，则完全不发起任何更新，直接退出
 	if [ "$force" != "force" ] && [ -n "$last_ip" ] && [ "$current_ip" = "$last_ip" ]; then
 		log "INFO" "公网 IP 未发生变化 ($current_ip)，无需发起任何更改"
 		write_status "1" "$now" "$current_ip" "公网 IP 未变动 ($current_ip)，保持最新"
@@ -221,7 +221,7 @@ do_check_and_update() {
 	fi
 
 	# 3. 读取 server_list
-	local raw_servers="$(uci -q get akile-ddns.main.server_list)"
+	local raw_servers="$(uci -q get akile-ddns.main.server_list || uci -q get akile-ddns.@global[0].server_list)"
 	if [ -z "$raw_servers" ]; then
 		log "WARN" "未配置任何规则服务器/端口列表 (server_list)"
 		write_status "1" "$now" "$current_ip" "未配置规则端口列表"
@@ -313,11 +313,22 @@ do_check_and_update() {
 
 daemon_loop() {
 	echo "$$" > "$PID_FILE"
-	trap 'rm -f "$PID_FILE" "$STATUS_FILE"; exit 0' INT TERM EXIT
+	trap 'rm -f "$PID_FILE"; exit 0' INT TERM EXIT
 
-	log "INFO" "Akile DDNS 守护进程已启动"
+	log "INFO" "Akile DDNS 守护进程已启动 (PID: $$)"
+	write_status "1" "$(date '+%Y-%m-%d %H:%M:%S')" "" "正在进行首次公网 IP 检测..."
+
 	while true; do
-		local interval="$(uci -q get akile-ddns.main.interval || echo 10)"
+		local enabled="$(uci -q get akile-ddns.main.enabled || uci -q get akile-ddns.@global[0].enabled || echo 0)"
+		if [ "$enabled" = "1" ]; then
+			# 先立即执行一次检测与同步
+			do_check_and_update
+		else
+			write_status "0" "$(date '+%Y-%m-%d %H:%M:%S')" "" "服务已在配置中禁用"
+			log "WARN" "插件未启用 (enabled != 1)，将在下个周期再次检查..."
+		fi
+
+		local interval="$(uci -q get akile-ddns.main.interval || uci -q get akile-ddns.@global[0].interval || echo 10)"
 		case "$interval" in
 			''|*[!0-9]*) interval=10 ;;
 			*) [ "$interval" -lt 1 ] && interval=10 ;;
@@ -326,13 +337,6 @@ daemon_loop() {
 		local sleep_sec=$((interval * 60))
 		sleep "$sleep_sec" &
 		wait $!
-
-		local enabled="$(uci -q get akile-ddns.main.enabled || echo 0)"
-		if [ "$enabled" = "1" ]; then
-			do_check_and_update
-		else
-			write_status "0" "$(date '+%Y-%m-%d %H:%M:%S')" "" "服务已停止"
-		fi
 	done
 }
 

@@ -76,6 +76,10 @@ return view.extend({
 					E('td', { 'class': 'td left' }, E('span', {}, [ statusBadge, manualCheckBtn ]))
 				]),
 				E('tr', { 'class': 'tr' }, [
+					E('td', { 'class': 'td left' }, _('插件版本')),
+					E('td', { 'class': 'td left' }, E('span', { 'class': 'label', 'style': 'background:#17a2b8;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;' }, 'v1.0.3'))
+				]),
+				E('tr', { 'class': 'tr' }, [
 					E('td', { 'class': 'td left' }, _('当前公网 IP')),
 					E('td', { 'class': 'td left' }, E('strong', { 'style': 'color:#0072c6;' }, statusObj.CURRENT_IP || _('未获取')))
 				]),

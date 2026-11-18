@@ -42,6 +42,10 @@ o = s:option(DummyValue, "_status", translate("服务状态"))
 o.rawhtml = true
 o.value = status_html
 
+o = s:option(DummyValue, "_version", translate("插件版本"))
+o.rawhtml = true
+o.value = '<span style="background:#17a2b8;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;">v1.0.3</span>'
+
 o = s:option(DummyValue, "_cur_ip", translate("当前公网 IP"))
 o.rawhtml = true
 o.value = '<strong style="color:#0072c6;">' .. cur_ip .. '</strong>'

@@ -1,0 +1,16 @@
+{
+	"luci-app-akile-ddns": {
+		"description": "Grant UCI and file access for luci-app-akile-ddns",
+		"read": {
+			"uci": [ "akile-ddns" ],
+			"file": {
+				"/var/run/akile-ddns.status": [ "read" ],
+				"/var/run/akile-ddns.lastip": [ "read" ],
+				"/var/log/akile-ddns.log": [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "akile-ddns" ]
+		}
+	}
+}

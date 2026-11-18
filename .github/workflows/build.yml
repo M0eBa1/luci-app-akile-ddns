@@ -1,0 +1,65 @@
+name: Build and Release OpenWrt Package
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build IPK Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Build OpenWrt IPK Package
+        run: |
+          python build_ipk.py
+
+      - name: Display Package Info and Checksum
+        run: |
+          echo "=== Package Files ==="
+          ls -lh *.ipk
+          echo "=== Checksums ==="
+          cat sha256sums
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-akile-ddns-ipk
+          path: |
+            *.ipk
+            sha256sums
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.ipk
+            sha256sums
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

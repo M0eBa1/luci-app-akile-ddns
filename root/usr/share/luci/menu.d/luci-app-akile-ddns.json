@@ -1,0 +1,12 @@
+{
+	"admin/services/akile-ddns": {
+		"title": "Akile DDNS",
+		"action": {
+			"type": "view",
+			"path": "akile-ddns/index"
+		},
+		"depends": {
+			"acl": [ "luci-app-akile-ddns" ]
+		}
+	}
+}

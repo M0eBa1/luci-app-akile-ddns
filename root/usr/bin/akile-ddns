@@ -1,0 +1,351 @@
+#!/bin/sh
+# Akile DDNS Daemon and CLI Tool
+
+LOG_FILE="/var/log/akile-ddns.log"
+STATUS_FILE="/var/run/akile-ddns.status"
+LAST_IP_FILE="/var/run/akile-ddns.lastip"
+PID_FILE="/var/run/akile-ddns.pid"
+MAX_LOG_LINES=200
+
+log() {
+	local level="$1"
+	shift
+	local msg="$*"
+	local time_str="$(date '+%Y-%m-%d %H:%M:%S')"
+	local line="[$time_str] [$level] $msg"
+	echo "$line"
+	if [ -d /var/log ]; then
+		echo "$line" >> "$LOG_FILE"
+		if [ -f "$LOG_FILE" ]; then
+			local count="$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)"
+			if [ "$count" -gt "$MAX_LOG_LINES" ]; then
+				local tmp_log="/tmp/akile-ddns.log.$$"
+				tail -n "$MAX_LOG_LINES" "$LOG_FILE" > "$tmp_log" 2>/dev/null && mv -f "$tmp_log" "$LOG_FILE"
+			fi
+		fi
+	fi
+	logger -t akile-ddns "[$level] $msg" 2>/dev/null
+}
+
+is_valid_ipv4() {
+	local ip="$1"
+	case "$ip" in
+		''|*[!0-9.]*) return 1 ;;
+	esac
+	local o1 o2 o3 o4
+	o1="$(echo "$ip" | cut -d. -f1)"
+	o2="$(echo "$ip" | cut -d. -f2)"
+	o3="$(echo "$ip" | cut -d. -f3)"
+	o4="$(echo "$ip" | cut -d. -f4)"
+	[ -n "$o1" ] && [ -n "$o2" ] && [ -n "$o3" ] && [ -n "$o4" ] || return 1
+	[ "$o1" -ge 1 ] && [ "$o1" -le 254 ] || return 1
+	[ "$o2" -ge 0 ] && [ "$o2" -le 255 ] || return 1
+	[ "$o3" -ge 0 ] && [ "$o3" -le 255 ] || return 1
+	[ "$o4" -ge 1 ] && [ "$o4" -le 254 ] || return 1
+	# Exclude loopback and private IP
+	[ "$o1" -ne 127 ] || return 1
+	[ "$o1" -ne 10 ] || return 1
+	if [ "$o1" -eq 172 ]; then
+		[ "$o2" -ge 16 ] && [ "$o2" -le 31 ] && return 1
+	fi
+	if [ "$o1" -eq 192 ] && [ "$o2" -eq 168 ]; then
+		return 1
+	fi
+	return 0
+}
+
+fetch_ip_from_url() {
+	local url="$1"
+	local res
+	res="$(curl -4 -s -k --connect-timeout 5 -m 8 "$url" 2>/dev/null | tr -d ' \t\r\n')"
+	if is_valid_ipv4 "$res"; then
+		echo "$res"
+		return 0
+	fi
+	return 1
+}
+
+get_public_ip() {
+	local source="$1"
+	local custom_url="$2"
+	local ip=""
+
+	if [ "$source" = "custom" ] && [ -n "$custom_url" ]; then
+		ip="$(fetch_ip_from_url "$custom_url")"
+		[ -n "$ip" ] && { echo "$ip"; return 0; }
+	elif [ "$source" = "ipify" ]; then
+		ip="$(fetch_ip_from_url "https://api4.ipify.org")"
+		[ -n "$ip" ] && { echo "$ip"; return 0; }
+	elif [ "$source" = "ipw" ]; then
+		ip="$(fetch_ip_from_url "https://4.ipw.cn")"
+		[ -n "$ip" ] && { echo "$ip"; return 0; }
+	elif [ "$source" = "ipsb" ]; then
+		ip="$(fetch_ip_from_url "https://api.ip.sb/ip")"
+		[ -n "$ip" ] && { echo "$ip"; return 0; }
+	elif [ "$source" = "ifconfig" ]; then
+		ip="$(fetch_ip_from_url "https://ifconfig.me/ip")"
+		[ -n "$ip" ] && { echo "$ip"; return 0; }
+	fi
+
+	# Fallback auto list
+	local urls="https://4.ipw.cn https://api4.ipify.org https://api.ip.sb/ip https://ifconfig.me/ip https://checkip.amazonaws.com"
+	for u in $urls; do
+		ip="$(fetch_ip_from_url "$u")"
+		if [ -n "$ip" ]; then
+			echo "$ip"
+			return 0
+		fi
+	done
+	return 1
+}
+
+extract_port() {
+	local item="$1"
+	item="$(echo "$item" | tr -d ' \t\r\n')"
+	case "$item" in
+		*:*)
+			echo "${item##*:}"
+			;;
+		*)
+			echo "$item"
+			;;
+	esac
+}
+
+is_valid_port() {
+	local p="$1"
+	case "$p" in
+		''|*[!0-9]*) return 1 ;;
+		*) [ "$p" -ge 1 ] && [ "$p" -le 65535 ] ;;
+	esac
+}
+
+write_status() {
+	local running="$1"
+	local last_check="$2"
+	local cur_ip="$3"
+	local status_msg="$4"
+	local pid="$$"
+	[ "$running" = "0" ] && pid=""
+
+	cat <<EOF > "$STATUS_FILE"
+RUNNING="$running"
+PID="$pid"
+LAST_CHECK="$last_check"
+CURRENT_IP="$cur_ip"
+STATUS_MSG="$status_msg"
+EOF
+}
+
+parse_rules() {
+	local json_data="$1"
+	echo "$json_data" | awk -v RS='}' '
+	/"id"[ \t]*:[ \t]*[0-9]+/ {
+		id = ""; wl = ""
+		idx = index($0, "\"id\"")
+		if (idx > 0) {
+			rest = substr($0, idx + 4)
+			c_idx = index(rest, ":")
+			if (c_idx > 0) {
+				val_str = substr(rest, c_idx + 1)
+				sub(/^[ \t\r\n]+/, "", val_str)
+				for (i = 1; i <= length(val_str); i++) {
+					ch = substr(val_str, i, 1)
+					if (ch >= "0" && ch <= "9") {
+						id = id ch
+					} else {
+						break
+					}
+				}
+			}
+		}
+		w_idx = index($0, "\"entry_whitelist\"")
+		if (w_idx > 0) {
+			rest_w = substr($0, w_idx + 17)
+			c_idx = index(rest_w, ":")
+			if (c_idx > 0) {
+				val_w = substr(rest_w, c_idx + 1)
+				sub(/^[ \t\r\n]+/, "", val_w)
+				if (substr(val_w, 1, 1) == "\"") {
+					val_w = substr(val_w, 2)
+					q_idx = index(val_w, "\"")
+					if (q_idx > 0) {
+						wl = substr(val_w, 1, q_idx - 1)
+					}
+				}
+			}
+		}
+		if (id != "") {
+			print id "|" wl
+		}
+	}
+	'
+}
+
+do_check_and_update() {
+	local force="$1"
+	local now="$(date '+%Y-%m-%d %H:%M:%S')"
+
+	local enabled="$(uci -q get akile-ddns.main.enabled || echo 0)"
+	if [ "$enabled" != "1" ] && [ "$force" != "force" ]; then
+		write_status "0" "$now" "" "插件未启用"
+		return 0
+	fi
+
+	local api_key="$(uci -q get akile-ddns.main.api_key)"
+	if [ -z "$api_key" ]; then
+		log "WARN" "API Key 未设置，无法执行白名单更新"
+		write_status "1" "$now" "" "API Key 未设置"
+		return 1
+	fi
+
+	local ip_source="$(uci -q get akile-ddns.main.ip_source || echo auto)"
+	local custom_ip_url="$(uci -q get akile-ddns.main.custom_ip_url)"
+
+	# Get public IP
+	local current_ip="$(get_public_ip "$ip_source" "$custom_ip_url")"
+	if [ -z "$current_ip" ]; then
+		log "ERROR" "获取当前公网 IPv4 失败，将在下个周期重试"
+		write_status "1" "$now" "" "获取公网 IP 失败"
+		return 1
+	fi
+
+	local last_ip=""
+	[ -f "$LAST_IP_FILE" ] && last_ip="$(cat "$LAST_IP_FILE" 2>/dev/null | tr -d ' \t\r\n')"
+
+	local ip_changed=0
+	if [ "$current_ip" != "$last_ip" ] || [ "$force" = "force" ]; then
+		ip_changed=1
+	fi
+
+	# Read server_list from UCI
+	local raw_servers="$(uci -q get akile-ddns.main.server_list)"
+	if [ -z "$raw_servers" ]; then
+		log "WARN" "未配置任何规则服务器/端口列表 (server_list)"
+		write_status "1" "$now" "$current_ip" "未配置规则端口列表"
+		echo "$current_ip" > "$LAST_IP_FILE"
+		return 0
+	fi
+
+	# Extract and unique ports
+	local ports=""
+	for item in $raw_servers; do
+		local p="$(extract_port "$item")"
+		if is_valid_port "$p"; then
+			case " $ports " in
+				*" $p "*) ;;
+				*) ports="$ports $p" ;;
+			esac
+		else
+			log "WARN" "跳过无效端口配置项: $item"
+		fi
+	done
+
+	if [ -z "$ports" ]; then
+		log "WARN" "未能从列表中提取到有效端口"
+		write_status "1" "$now" "$current_ip" "无有效端口"
+		echo "$current_ip" > "$LAST_IP_FILE"
+		return 0
+	fi
+
+	log "INFO" "当前检测到公网 IP: $current_ip (上次: ${last_ip:-无})"
+
+	local total_rules=0
+	local updated_rules=0
+	local skip_rules=0
+	local fail_rules=0
+
+	for port in $ports; do
+		# Query rules for this listen_port
+		local get_url="https://cdnapi.akile.ai/api/open/rules?listen_port=$port"
+		local resp="$(curl -s -k --connect-timeout 8 -m 15 -H "X-API-Key: $api_key" "$get_url" 2>/dev/null)"
+		
+		local parsed="$(parse_rules "$resp")"
+		if [ -z "$parsed" ]; then
+			log "WARN" "端口 $port 未查询到对应规则，或接口响应异常 (resp: $(echo "$resp" | cut -c 1-80))"
+			continue
+		fi
+
+		for entry in $parsed; do
+			total_rules=$((total_rules + 1))
+			local r_id="${entry%%|*}"
+			local r_wl="${entry##*|}"
+			# Normalize whitelist (strip /32)
+			local clean_wl="${r_wl%%/*}"
+
+			if [ "$clean_wl" = "$current_ip" ]; then
+				skip_rules=$((skip_rules + 1))
+				log "INFO" "规则 ID $r_id (端口 $port) 白名单已是最新 ($clean_wl)，跳过"
+			else
+				log "INFO" "规则 ID $r_id (端口 $port) 白名单为 [$r_wl]，正在更新为 [$current_ip]..."
+				local put_url="https://cdnapi.akile.ai/api/open/rules/$r_id/entry-whitelist"
+				local put_data="{\"entry_whitelist\":\"$current_ip/32\"}"
+				local put_resp="$(curl -s -k -X PUT --connect-timeout 8 -m 15 \
+					-H "X-API-Key: $api_key" \
+					-H "Content-Type: application/json" \
+					-d "$put_data" "$put_url" 2>/dev/null)"
+
+				if echo "$put_resp" | grep -q -E '"changed"[ \t]*:[ \t]*true|"id"[ \t]*:'; then
+					updated_rules=$((updated_rules + 1))
+					log "INFO" "规则 ID $r_id (端口 $port) 白名单更新成功!"
+				else
+					fail_rules=$((fail_rules + 1))
+					log "ERROR" "规则 ID $r_id (端口 $port) 更新失败: $(echo "$put_resp" | cut -c 1-100)"
+				fi
+			fi
+		done
+	done
+
+	echo "$current_ip" > "$LAST_IP_FILE"
+
+	local summary_msg="检测完成: IP $current_ip (共 $total_rules 条规则, 已更新 $updated_rules, 保持 $skip_rules, 失败 $fail_rules)"
+	log "INFO" "$summary_msg"
+	write_status "1" "$now" "$current_ip" "$summary_msg"
+	return 0
+}
+
+daemon_loop() {
+	echo "$$" > "$PID_FILE"
+	trap 'rm -f "$PID_FILE" "$STATUS_FILE"; exit 0' INT TERM EXIT
+
+	log "INFO" "Akile DDNS 服务已启动"
+	while true; do
+		local enabled="$(uci -q get akile-ddns.main.enabled || echo 0)"
+		if [ "$enabled" = "1" ]; then
+			do_check_and_update
+		else
+			write_status "0" "$(date '+%Y-%m-%d %H:%M:%S')" "" "服务已停止"
+		fi
+
+		local interval="$(uci -q get akile-ddns.main.interval || echo 10)"
+		case "$interval" in
+			''|*[!0-9]*) interval=10 ;;
+			*) [ "$interval" -lt 1 ] && interval=10 ;;
+		esac
+
+		local sleep_sec=$((interval * 60))
+		sleep "$sleep_sec" &
+		wait $!
+	done
+}
+
+case "$1" in
+	run|daemon)
+		daemon_loop
+		;;
+	check)
+		do_check_and_update "force"
+		;;
+	status)
+		if [ -f "$STATUS_FILE" ]; then
+			cat "$STATUS_FILE"
+		else
+			echo "RUNNING=0"
+			echo "STATUS_MSG=未启动"
+		fi
+		;;
+	*)
+		echo "Usage: $0 {run|check|status}"
+		exit 1
+		;;
+esac

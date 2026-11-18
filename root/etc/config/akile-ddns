@@ -1,0 +1,7 @@
+config global 'main'
+	option enabled '0'
+	option api_key ''
+	option interval '10'
+	option ip_source 'auto'
+	option custom_ip_url ''
+	list server_list '103.152.220.1:10000'

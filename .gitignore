@@ -1,0 +1,11 @@
+# Compiled OpenWrt Packages
+*.ipk
+sha256sums
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# OS generated files
+.DS_Store
+Thumbs.db

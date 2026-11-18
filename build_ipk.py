@@ -12,7 +12,7 @@ import io
 import hashlib
 
 PKG_NAME = "luci-app-akile-ddns"
-PKG_VERSION = "1.0.3-1"
+PKG_VERSION = "1.0.4-1"
 PKG_ARCH = "all"
 PKG_FILENAME = f"{PKG_NAME}_{PKG_VERSION}_{PKG_ARCH}.ipk"
 

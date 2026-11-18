@@ -4,14 +4,17 @@ START=95
 STOP=10
 USE_PROCD=1
 
+PROG=/usr/bin/akile-ddns
+
 start_service() {
 	local enabled="$(uci -q get akile-ddns.main.enabled || uci -q get akile-ddns.@global[0].enabled || echo 0)"
 	if [ "$enabled" != "1" ]; then
+		echo "[Akile-DDNS] 提示: 插件在配置中处于禁用状态 (enabled=0)。请在网页勾选【启用服务】并保存，或执行: uci set akile-ddns.main.enabled=1 && uci commit akile-ddns"
 		return 0
 	fi
 
 	procd_open_instance "akile-ddns"
-	procd_set_param command /usr/bin/akile-ddns run
+	procd_set_param command "$PROG" run
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1
 	procd_set_param stderr 1
@@ -20,11 +23,6 @@ start_service() {
 
 stop_service() {
 	rm -f /var/run/akile-ddns.pid /var/run/akile-ddns.status /var/run/akile-ddns.lastip
-}
-
-reload_service() {
-	stop
-	start
 }
 
 service_triggers() {

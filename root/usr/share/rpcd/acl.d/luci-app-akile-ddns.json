@@ -1,6 +1,6 @@
 {
 	"luci-app-akile-ddns": {
-		"description": "Grant UCI and file access for luci-app-akile-ddns",
+		"description": "Grant UCI, file and execution access for luci-app-akile-ddns",
 		"read": {
 			"uci": [ "akile-ddns" ],
 			"file": {
@@ -10,7 +10,11 @@
 			}
 		},
 		"write": {
-			"uci": [ "akile-ddns" ]
+			"uci": [ "akile-ddns" ],
+			"file": {
+				"/etc/init.d/akile-ddns": [ "exec" ],
+				"/usr/bin/akile-ddns": [ "exec" ]
+			}
 		}
 	}
 }

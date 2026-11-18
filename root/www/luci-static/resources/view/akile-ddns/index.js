@@ -39,7 +39,7 @@ return view.extend({
 		var m, s, o;
 
 		m = new form.Map('akile-ddns', _('Akile DDNS'),
-			_('自动检测本地公网 IPv4 变动，并定时同步更新 Akile 端口转发规则的入口白名单。'));
+			_('自动检测本地公网 IPv4 变动。仅在 IP 发生变动时提交 PUT 请求更新白名单；保存配置后将立即执行一次检测同步。'));
 
 		// Status Section
 		s = m.section(form.NamedSection, 'main', 'global', _('运行状态'));
@@ -51,10 +51,29 @@ return view.extend({
 				? '<span class="label success" style="background:#28a745;color:#fff;padding:3px 8px;border-radius:4px;">运行中</span>'
 				: '<span class="label warning" style="background:#6c757d;color:#fff;padding:3px 8px;border-radius:4px;">未运行</span>';
 
+			var manualCheckBtn = E('button', {
+				'class': 'btn cbi-button cbi-button-apply',
+				'style': 'margin-left: 10px;',
+				'click': function(ev) {
+					ev.preventDefault();
+					ui.showIndicator('akile_checking', _('正在立即检测公网 IP 并同步白名单...'));
+					return fs.exec('/usr/bin/akile-ddns', ['check']).then(function() {
+						return new Promise(function(resolve) { setTimeout(resolve, 1500); });
+					}).then(function() {
+						ui.hideIndicator('akile_checking');
+						ui.addNotification(null, E('p', _('检测已完成，请查看最新状态与日志。')), 'info');
+						window.location.reload();
+					}).catch(function(err) {
+						ui.hideIndicator('akile_checking');
+						ui.addNotification(null, E('p', _('检测执行异常: ') + err), 'error');
+					});
+				}
+			}, _('立即检测并同步'));
+
 			var table = E('table', { 'class': 'table' }, [
 				E('tr', { 'class': 'tr' }, [
 					E('td', { 'class': 'td left', 'style': 'width:33%' }, _('服务状态')),
-					E('td', { 'class': 'td left' }, E('span', {}, [ statusBadge ]))
+					E('td', { 'class': 'td left' }, E('span', {}, [ statusBadge, manualCheckBtn ]))
 				]),
 				E('tr', { 'class': 'tr' }, [
 					E('td', { 'class': 'td left' }, _('当前公网 IP')),
@@ -94,7 +113,7 @@ return view.extend({
 
 		// Interval
 		o = s.option(form.Value, 'interval', _('检测间隔 (分钟)'),
-			_('定时检测公网 IP 变动的频率，默认 10 分钟。'));
+			_('定时检测公网 IP 变动的频率，默认 10 分钟。每次检测若 IP 未变化则不产生任何 API 请求。'));
 		o.default = '10';
 		o.datatype = 'and(uinteger, min(1))';
 
@@ -122,7 +141,7 @@ return view.extend({
 
 		o = s.option(form.DynamicList, 'server_list', _('规则列表 (IP:端口 或 端口)'),
 			_('支持填入 <b>节点IP:端口</b> (例如 <code>103.152.220.1:10000</code> 或 <code>hk.akile.ai:20000</code>) 或直接填入 <b>纯端口</b> (例如 <code>10000</code>)。<br/>' +
-			  '插件会自动提取端口 (listen_port)，向 Akile 接口获取规则并将入口白名单更新为当前公网 IP。'));
+			  '保存后插件会立即提取端口并查询更新规则；后续仅在检测到公网 IP 变化时才会进行 PUT 更改。'));
 		o.placeholder = '103.152.220.1:10000 或 10000';
 		o.rmempty = false;
 
@@ -157,5 +176,21 @@ return view.extend({
 		};
 
 		return m.render();
+	},
+
+	handleSaveApply: function(ev, mode) {
+		var self = this;
+		return this.handleSave(ev).then(function() {
+			ui.showIndicator('akile_saving', _('正在保存并应用配置，立即触发首次 IP 检测...'));
+			return fs.exec('/etc/init.d/akile-ddns', ['restart']).then(function() {
+				return new Promise(function(resolve) { setTimeout(resolve, 2000); });
+			}).then(function() {
+				ui.hideIndicator('akile_saving');
+				window.location.reload();
+			}).catch(function(err) {
+				ui.hideIndicator('akile_saving');
+				ui.addNotification(null, E('p', _('重启服务失败: ') + err), 'error');
+			});
+		});
 	}
 });

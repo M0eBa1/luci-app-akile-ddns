@@ -202,7 +202,7 @@ do_check_and_update() {
 	local ip_source="$(uci -q get akile-ddns.main.ip_source || echo auto)"
 	local custom_ip_url="$(uci -q get akile-ddns.main.custom_ip_url)"
 
-	# Get public IP
+	# 1. 获取当前公网 IP
 	local current_ip="$(get_public_ip "$ip_source" "$custom_ip_url")"
 	if [ -z "$current_ip" ]; then
 		log "ERROR" "获取当前公网 IPv4 失败，将在下个周期重试"
@@ -213,12 +213,14 @@ do_check_and_update() {
 	local last_ip=""
 	[ -f "$LAST_IP_FILE" ] && last_ip="$(cat "$LAST_IP_FILE" 2>/dev/null | tr -d ' \t\r\n')"
 
-	local ip_changed=0
-	if [ "$current_ip" != "$last_ip" ] || [ "$force" = "force" ]; then
-		ip_changed=1
+	# 2. 优化：如果不是强制检测，且上次有记录且 IP 没有变动，则完全不发起任何更新，直接退出
+	if [ "$force" != "force" ] && [ -n "$last_ip" ] && [ "$current_ip" = "$last_ip" ]; then
+		log "INFO" "公网 IP 未发生变化 ($current_ip)，无需发起任何更改"
+		write_status "1" "$now" "$current_ip" "公网 IP 未变动 ($current_ip)，保持最新"
+		return 0
 	fi
 
-	# Read server_list from UCI
+	# 3. 读取 server_list
 	local raw_servers="$(uci -q get akile-ddns.main.server_list)"
 	if [ -z "$raw_servers" ]; then
 		log "WARN" "未配置任何规则服务器/端口列表 (server_list)"
@@ -227,7 +229,7 @@ do_check_and_update() {
 		return 0
 	fi
 
-	# Extract and unique ports
+	# 提取唯一端口
 	local ports=""
 	for item in $raw_servers; do
 		local p="$(extract_port "$item")"
@@ -248,7 +250,11 @@ do_check_and_update() {
 		return 0
 	fi
 
-	log "INFO" "当前检测到公网 IP: $current_ip (上次: ${last_ip:-无})"
+	if [ -n "$last_ip" ] && [ "$current_ip" != "$last_ip" ]; then
+		log "INFO" "检测到公网 IP 变动: $last_ip -> $current_ip，开始比对并同步规则..."
+	else
+		log "INFO" "正在执行规则白名单检测 (当前公网 IP: $current_ip)..."
+	fi
 
 	local total_rules=0
 	local updated_rules=0
@@ -262,7 +268,7 @@ do_check_and_update() {
 		
 		local parsed="$(parse_rules "$resp")"
 		if [ -z "$parsed" ]; then
-			log "WARN" "端口 $port 未查询到对应规则，或接口响应异常 (resp: $(echo "$resp" | cut -c 1-80))"
+			log "WARN" "端口 $port 未查询到对应规则或接口异常 (resp: $(echo "$resp" | cut -c 1-80))"
 			continue
 		fi
 
@@ -273,11 +279,12 @@ do_check_and_update() {
 			# Normalize whitelist (strip /32)
 			local clean_wl="${r_wl%%/*}"
 
+			# 只有白名单与当前 IP 不一致时才执行 PUT 更改！
 			if [ "$clean_wl" = "$current_ip" ]; then
 				skip_rules=$((skip_rules + 1))
-				log "INFO" "规则 ID $r_id (端口 $port) 白名单已是最新 ($clean_wl)，跳过"
+				log "INFO" "规则 ID $r_id (端口 $port) 白名单已是最新 ($clean_wl)，跳过 PUT"
 			else
-				log "INFO" "规则 ID $r_id (端口 $port) 白名单为 [$r_wl]，正在更新为 [$current_ip]..."
+				log "INFO" "规则 ID $r_id (端口 $port) 白名单变动: [$r_wl] -> [$current_ip]，正在提交 PUT 更改..."
 				local put_url="https://cdnapi.akile.ai/api/open/rules/$r_id/entry-whitelist"
 				local put_data="{\"entry_whitelist\":\"$current_ip/32\"}"
 				local put_resp="$(curl -s -k -X PUT --connect-timeout 8 -m 15 \
@@ -287,7 +294,7 @@ do_check_and_update() {
 
 				if echo "$put_resp" | grep -q -E '"changed"[ \t]*:[ \t]*true|"id"[ \t]*:'; then
 					updated_rules=$((updated_rules + 1))
-					log "INFO" "规则 ID $r_id (端口 $port) 白名单更新成功!"
+					log "INFO" "规则 ID $r_id (端口 $port) 白名单已成功更新为 $current_ip"
 				else
 					fail_rules=$((fail_rules + 1))
 					log "ERROR" "规则 ID $r_id (端口 $port) 更新失败: $(echo "$put_resp" | cut -c 1-100)"
@@ -298,7 +305,7 @@ do_check_and_update() {
 
 	echo "$current_ip" > "$LAST_IP_FILE"
 
-	local summary_msg="检测完成: IP $current_ip (共 $total_rules 条规则, 已更新 $updated_rules, 保持 $skip_rules, 失败 $fail_rules)"
+	local summary_msg="检测完成: IP $current_ip (共 $total_rules 规则, 更新 $updated_rules, 保持最新 $skip_rules, 失败 $fail_rules)"
 	log "INFO" "$summary_msg"
 	write_status "1" "$now" "$current_ip" "$summary_msg"
 	return 0
@@ -308,15 +315,8 @@ daemon_loop() {
 	echo "$$" > "$PID_FILE"
 	trap 'rm -f "$PID_FILE" "$STATUS_FILE"; exit 0' INT TERM EXIT
 
-	log "INFO" "Akile DDNS 服务已启动"
+	log "INFO" "Akile DDNS 守护进程已启动"
 	while true; do
-		local enabled="$(uci -q get akile-ddns.main.enabled || echo 0)"
-		if [ "$enabled" = "1" ]; then
-			do_check_and_update
-		else
-			write_status "0" "$(date '+%Y-%m-%d %H:%M:%S')" "" "服务已停止"
-		fi
-
 		local interval="$(uci -q get akile-ddns.main.interval || echo 10)"
 		case "$interval" in
 			''|*[!0-9]*) interval=10 ;;
@@ -326,6 +326,13 @@ daemon_loop() {
 		local sleep_sec=$((interval * 60))
 		sleep "$sleep_sec" &
 		wait $!
+
+		local enabled="$(uci -q get akile-ddns.main.enabled || echo 0)"
+		if [ "$enabled" = "1" ]; then
+			do_check_and_update
+		else
+			write_status "0" "$(date '+%Y-%m-%d %H:%M:%S')" "" "服务已停止"
+		fi
 	done
 }
 

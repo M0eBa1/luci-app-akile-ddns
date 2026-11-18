@@ -4,7 +4,11 @@ local sys = require "luci.sys"
 local m, s, o
 
 m = Map("akile-ddns", translate("Akile DDNS"),
-	translate("自动检测本地公网 IPv4 变动，并定时同步更新 Akile 端口转发规则的入口白名单。"))
+	translate("自动检测本地公网 IPv4 变动。仅在 IP 发生变动时提交 PUT 请求更新白名单；保存配置后将立即执行一次检测同步。"))
+
+function m.on_after_commit(self)
+	sys.call("/etc/init.d/akile-ddns restart >/dev/null 2>&1")
+end
 
 -- Status Section
 s = m:section(NamedSection, "main", "global", translate("运行状态"))
@@ -63,7 +67,7 @@ o.password = true
 o.rmempty = false
 
 o = s:option(Value, "interval", translate("检测间隔 (分钟)"),
-	translate("定时检测公网 IP 变动的频率，默认 10 分钟。"))
+	translate("定时检测公网 IP 变动的频率，默认 10 分钟。每次检测若 IP 未变化则不产生任何 API 请求。"))
 o.datatype = "uinteger"
 o.default = "10"
 o.rmempty = false
@@ -90,7 +94,7 @@ s.addremove = false
 
 o = s:option(DynamicList, "server_list", translate("规则列表 (IP:端口 或 端口)"),
 	translate("支持填入 <b>节点IP:端口</b> (例如 <code>103.152.220.1:10000</code> 或 <code>hk.akile.ai:20000</code>) 或直接填入 <b>纯端口</b> (例如 <code>10000</code>)。<br/>" ..
-	"插件会自动提取端口 (listen_port)，向 Akile 接口获取规则并将入口白名单更新为当前公网 IP。"))
+	"保存后插件会立即提取端口并查询更新规则；后续仅在检测到公网 IP 变化时才会进行 PUT 更改。"))
 o.placeholder = "103.152.220.1:10000 或 10000"
 o.rmempty = false
 
